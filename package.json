@@ -1,0 +1,21 @@
+{
+  "name": "gardenpi-mqtt",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mkurdziel/gardenpi-mqtt"
+  },
+  "author": "Mike Kurdziel (mkurdziel)",
+  "license": "ISC",
+  "dependencies": {
+    "lodash": "^4.17.15",
+    "mqtt": "^3.0.0",
+    "onoff": "^4.1.3",
+    "winston": "^3.2.1"
+  }
+}
