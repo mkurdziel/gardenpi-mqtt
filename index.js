@@ -16,6 +16,7 @@ const MQTT_HOST = process.env.MQTT_HOST || 'mqtt://192.168.1.2';
 const MQTT_TOPIC = process.env.MQTT_TOPIC || 'node/gardenpi';
 const MQTT_TOPIC_SET = 'set';
 const MQTT_TOPIC_CHECKIN = 'checkin';
+const MQTT_TOPIC_TIMER = 'timer';
 
 const MQTT_TOPIC_RELAY_1 = `${MQTT_TOPIC}/${NODE_NAME_RELAY_1}`;
 const MQTT_TOPIC_RELAY_2 = `${MQTT_TOPIC}/${NODE_NAME_RELAY_2}`;
@@ -30,6 +31,9 @@ const CHECKIN_PERIOD_MS = 5000;
 
 // Interval at which to send the current relay status back
 const MQTT_STATUS_UPDATE_INTERVAL_MS = 5000;
+
+// Maximum water runtime before it auto shuts off
+const MAXIMUM_RUNTIME_M = 30;
 
 const LOG_FORMAT = printf(({ level, message, label, timestamp }) => {
   return `${timestamp} [${level}]: ${message}`;
@@ -55,6 +59,7 @@ PORT_2 = new Gpio(GPIO_NUM_RELAY_2, 'out');
 
 const statusInterval = setInterval(sendStatus, MQTT_STATUS_UPDATE_INTERVAL_MS); 
 const checkinInterval = setInterval(sendCheckin, CHECKIN_PERIOD_MS); 
+let safetyShutoffTimeout = null;
 
 client.on('connect', () => {
 	LOGGER.info(`Connected to MQTT host: ` + MQTT_HOST);
@@ -74,6 +79,20 @@ client.on('message', (topic, message) => {
     }
 })
 
+function startSafetyTimer() {
+    if (safetyShutoffTimeout) {
+        safetyShutoffTimeout.refresh();
+    } else {
+        safetyShutoffTimeout = setTimeout(safetyShutoff, MAXIMUM_RUNTIME_M  * 60 * 1000);
+    }
+}
+
+function safetyShutoff() {
+    LOGGER.warn('Performing safety shutoff');
+    switchRelay(MQTT_TOPIC_RELAY_1, PORT_1, NODE_NAME_RELAY_1, 'OFF');
+    switchRelay(MQTT_TOPIC_RELAY_2, PORT_2, NODE_NAME_RELAY_2, 'OFF');
+}
+
 function sendRelayStatus(mqttTopic, port) {
     let relayValue = port.readSync() === 0 ? MQTT_VALUE_OFF : MQTT_VALUE_ON;    
     client.publish(mqttTopic, relayValue)
@@ -89,8 +108,10 @@ function switchRelay(mqttTopic, port, name, message) {
 
      if (message == MQTT_VALUE_ON) {
         port.writeSync(1); 
+        startSafetyTimer();
      } else if (message == MQTT_VALUE_OFF) {
         port.writeSync(0); 
+        clearTimeout(safetyShutoffTimeout);
      } else {
         LOGGER.error(`Unknown MQTT value for ${name}: ${message}`);
      }
