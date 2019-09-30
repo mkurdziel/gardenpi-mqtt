@@ -15,7 +15,6 @@ const GPIO_NUM_RELAY_2 = 21;
 const MQTT_HOST = process.env.MQTT_HOST || 'mqtt://192.168.1.2';
 const MQTT_TOPIC = process.env.MQTT_TOPIC || 'node/gardenpi';
 const MQTT_TOPIC_SET = 'set';
-const MQTT_TOPIC_CHECKIN = 'checkin';
 const MQTT_TOPIC_TIMER = 'timer';
 
 const MQTT_TOPIC_RELAY_1 = `${MQTT_TOPIC}/${NODE_NAME_RELAY_1}`;
@@ -26,14 +25,11 @@ const MQTT_TOPIC_SET_RELAY_2 = `${MQTT_TOPIC_RELAY_2}/${MQTT_TOPIC_SET}`;
 const MQTT_VALUE_ON = 'ON';
 const MQTT_VALUE_OFF = 'OFF';
 
-// Period at which to update the checkin time
-const CHECKIN_PERIOD_MS = 5000;
-
 // Interval at which to send the current relay status back
 const MQTT_STATUS_UPDATE_INTERVAL_MS = 5000;
 
 // Maximum water runtime before it auto shuts off
-const MAXIMUM_RUNTIME_M = 30;
+const MAXIMUM_RUNTIME_M = 5;
 
 const LOG_FORMAT = printf(({ level, message, label, timestamp }) => {
   return `${timestamp} [${level}]: ${message}`;
@@ -57,8 +53,9 @@ const LOGGER = winston.createLogger(
 PORT_1 = new Gpio(GPIO_NUM_RELAY_1, 'out');
 PORT_2 = new Gpio(GPIO_NUM_RELAY_2, 'out');
 
-const statusInterval = setInterval(sendStatus, MQTT_STATUS_UPDATE_INTERVAL_MS); 
-const checkinInterval = setInterval(sendCheckin, CHECKIN_PERIOD_MS); 
+let shutoffTime = null;
+
+const statusInterval = setInterval(runStatusLoop, MQTT_STATUS_UPDATE_INTERVAL_MS); 
 let safetyShutoffTimeout = null;
 
 client.on('connect', () => {
@@ -80,27 +77,60 @@ client.on('message', (topic, message) => {
 })
 
 function startSafetyTimer() {
-    if (safetyShutoffTimeout) {
-        safetyShutoffTimeout.refresh();
-    } else {
-        safetyShutoffTimeout = setTimeout(safetyShutoff, MAXIMUM_RUNTIME_M  * 60 * 1000);
-    }
+    LOGGER.info(`Starting safety timer for ${MAXIMUM_RUNTIME_M} min`);
+
+    shutoffTime = moment().add(MAXIMUM_RUNTIME_M, 'minute');
 }
 
 function safetyShutoff() {
-    LOGGER.warn('Performing safety shutoff');
-    switchRelay(MQTT_TOPIC_RELAY_1, PORT_1, NODE_NAME_RELAY_1, 'OFF');
-    switchRelay(MQTT_TOPIC_RELAY_2, PORT_2, NODE_NAME_RELAY_2, 'OFF');
+    if (isRelayOn()) {
+        LOGGER.warn(`Performing safety shutoff after ${MAXIMUM_RUNTIME_M} min `);
+        switchRelay(MQTT_TOPIC_RELAY_1, PORT_1, NODE_NAME_RELAY_1, 'OFF');
+        switchRelay(MQTT_TOPIC_RELAY_2, PORT_2, NODE_NAME_RELAY_2, 'OFF');
+    }
+
+    shutoffTime = null;
 }
 
-function sendRelayStatus(mqttTopic, port) {
-    let relayValue = port.readSync() === 0 ? MQTT_VALUE_OFF : MQTT_VALUE_ON;    
-    client.publish(mqttTopic, relayValue)
+//function sendRelayStatus(mqttTopic, port) {
+    //let relayValue = port.readSync() === 0 ? MQTT_VALUE_OFF : MQTT_VALUE_ON;    
+    //client.publish(mqttTopic, relayValue)
+//}
+
+function isRelayOn() {
+    return PORT_1.readSync() !== 0 || PORT_2.readSync() !== 0;
+}
+
+function runStatusLoop() {
+    if(shutoffTime) {
+       //LOGGER.debug(moment().isAfter(shutoffTime));
+       if (moment().isAfter(shutoffTime)) {
+            safetyShutoff(); 
+       }
+    }
+
+    sendStatus();
 }
 
 function sendStatus() {
-    sendRelayStatus(MQTT_TOPIC_RELAY_1, PORT_1);
-    sendRelayStatus(MQTT_TOPIC_RELAY_2, PORT_2);
+    //sendRelayStatus(MQTT_TOPIC_RELAY_1, PORT_1);
+    //sendRelayStatus(MQTT_TOPIC_RELAY_2, PORT_2);
+
+    let relay1Value = PORT_1.readSync() === 0 ? MQTT_VALUE_OFF : MQTT_VALUE_ON;    
+    let relay2Value = PORT_2.readSync() === 0 ? MQTT_VALUE_OFF : MQTT_VALUE_ON;    
+
+    let timeRemaining = shutoffTime ? moment.duration(shutoffTime.diff(moment())).asSeconds() : 0;
+
+    let payload = {};
+    payload['relay_1'] = relay1Value;
+    payload['relay_2'] = relay2Value;
+    payload['timestamp'] = moment().format();
+    payload['timer'] = timeRemaining > 0 ? timeRemaining : 0;
+
+    const payloadString = JSON.stringify(payload);
+    LOGGER.debug('Sending status: ' + payloadString);
+
+    client.publish(MQTT_TOPIC, payloadString);
 }
 
 function switchRelay(mqttTopic, port, name, message) { 
@@ -111,16 +141,10 @@ function switchRelay(mqttTopic, port, name, message) {
         startSafetyTimer();
      } else if (message == MQTT_VALUE_OFF) {
         port.writeSync(0); 
-        clearTimeout(safetyShutoffTimeout);
      } else {
         LOGGER.error(`Unknown MQTT value for ${name}: ${message}`);
      }
 
-    sendRelayStatus(mqttTopic, port);
-}
-
-function sendCheckin() {
-    LOGGER.debug(`Sending checkin: ${moment().format()}`);
-    client.publish(`${MQTT_TOPIC}/${MQTT_TOPIC_CHECKIN}`, moment().format());
+    sendStatus();
 }
 
